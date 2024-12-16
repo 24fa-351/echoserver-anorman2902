@@ -2,24 +2,48 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <pthread.h>
+#include <signal.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#define BUFFER_SIZE 1024
+#define ECHO_EXTRA 50
+#define EXPECTED_ARGC 3
+#define BACKLOG 5
+
+int server_sock;
 
 void error_handling(const char *message) {
     fprintf(stderr, "%s\n", message);
     exit(1);
 }
 
-void *handle_client(void *arg) {
-    int client_sock = *(int*)arg;
-    free(arg);
-    char buffer[1024];
+void cleanup(int sig) {
+    printf("\nShutting down server...\n\n");
+    close(server_sock);
+    exit(0);
+}
 
-    while(1) {
+void *handle_client(void *arg) {
+    int client_sock = *(int *)arg;
+    free(arg);
+
+    struct sockaddr_in client_info;
+    socklen_t client_info_len = sizeof(client_info);
+    getpeername(client_sock, (struct sockaddr*)&client_info, &client_info_len);
+    char *client_ip = inet_ntoa(client_info.sin_addr);
+    int client_port = ntohs(client_info.sin_port);
+
+    printf("Connected to client: %s:%d\n\n", client_ip, client_port);
+
+    char buffer[BUFFER_SIZE];
+
+    while (1) {
         ssize_t str_len = recv(client_sock, buffer, sizeof(buffer) - 1, 0);
         if (str_len == 0) {
-            printf("Client Disconnected.\n");
+            printf("Client %s:%d disconnected.\n\n", client_ip, client_port);
             break;
         }
         if (str_len == -1) {
@@ -28,43 +52,28 @@ void *handle_client(void *arg) {
         }
 
         buffer[str_len] = '\0';
-        printf("Received: %s\n", buffer);
+        printf("Received from %s:%d: %s\n", client_ip, client_port, buffer);
 
-        if (strncmp(buffer, "GET /favicon.ico", 16) == 0) {
-            const char *http_response = "HTTP/1.1 404 Not Found\r\n"
-                                        "Content-Length: 0\r\n"
-                                        "Connection: close\r\n"
-                                        "\r\n";
-            send(client_sock, http_response, strlen(http_response), 0);
-            continue;
-        }
-
-        if (strncmp(buffer, "GET", 3) == 0) {
-            const char *http_response = "HTTP/1.1 200 OK\r\n"
-                                        "Content-Type: text/plain\r\n"
-                                        "Content-Length: 19\r\n"
-                                        "Connection: keep-alive\r\n"
-                                        "\r\n"
-                                        "Hello, HTTP client!";
-            if (send(client_sock, http_response, strlen(http_response), 0) == -1) {
+        char *save_ptr;
+        char *line = strtok_r(buffer, "\n", &save_ptr);
+        while (line != NULL) {
+            char echo_msg[BUFFER_SIZE + ECHO_EXTRA];
+            snprintf(echo_msg, sizeof(echo_msg), "[%s:%d]: %s\n", client_ip, client_port, line);
+            if (send(client_sock, echo_msg, strlen(echo_msg), 0) == -1) {
                 perror("send() error");
                 break;
             }
-        } else {
-            if (send(client_sock, buffer, str_len, 0) == -1) {
-                perror("send() error");
-                break;
-            }
+            line = strtok_r(NULL, "\n", &save_ptr);
         }
     }
 
     close(client_sock);
-    printf("Connection closed.\n");
+    printf("Connection to %s:%d closed.\n\n", client_ip, client_port);
     return NULL;
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
+    if (argc != EXPECTED_ARGC) {
         fprintf(stderr, "Usage: %s -p <port>\n", argv[0]);
         exit(1);
     }
@@ -80,7 +89,8 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    int server_sock;
+    signal(SIGINT, cleanup);
+
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_addr_size;
 
@@ -88,38 +98,44 @@ int main(int argc, char *argv[]) {
     if (server_sock == -1) {
         error_handling("socket() error!");
     }
-    
+
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     server_addr.sin_port = htons(port);
 
-    if (bind(server_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+    if (bind(server_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
         error_handling("bind() error!");
     }
 
-    if (listen(server_sock, 5) == -1) {
+    if (listen(server_sock, BACKLOG) == -1) {
         error_handling("listen() error!");
     }
 
-    printf("Multi-threaded echo server started on port %d. Waiting for connections...\n", port);
+    printf("Multi-threaded echo server started on port %d. Waiting for connections...\n\n", port);
 
-    while(1) {
+    while (1) {
         client_addr_size = sizeof(client_addr);
         int *client_sock = malloc(sizeof(int));
-        *client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &client_addr_size);
-        if (*client_sock == -1) {
-            free(client_sock);
-            perror("accept() error");
+        if (!client_sock) {
+            perror("malloc() error");
             continue;
         }
-        printf("Connected to a client!\n");
+
+        *client_sock = accept(server_sock, (struct sockaddr *)&client_addr, &client_addr_size);
+        if (*client_sock == -1) {
+            free(client_sock);
+            perror("accept() error\n");
+            printf("\n");
+            continue;
+        }
 
         pthread_t t_id;
-        if (pthread_create(&t_id, NULL, handle_client, (void*)client_sock) != 0) {
+        if (pthread_create(&t_id, NULL, handle_client, (void *)client_sock) != 0) {
             perror("pthread_create() error");
             close(*client_sock);
             free(client_sock);
+            printf("\n");
             continue;
         }
         pthread_detach(t_id);
