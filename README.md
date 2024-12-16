@@ -13,15 +13,17 @@ This is a multi-threaded TCP echo server that listens for incoming connections, 
 
 ## Requirements
 
-- C compiler (e.g., GCC)
-- `pthread` library for multi-threading support
-- `netinet/in.h`, `arpa/inet.h`, and other standard socket libraries
+- **clang**: The C compiler used for building the server.
+- **make**: The build automation tool used to manage the compilation process.
+- **pthread**: Library required for multi-threading support.
+- **netinet/in.h**, **arpa/inet.h**, and other standard socket libraries for networking functionality.
+
 
 ## How to Compile
 
 1. Clone or download the repository to your local machine.
-2. Compile the server using the following command:
-   
-   ```bash
-   gcc -o echo_server echo_server.c -pthread
+2. Ensure you have **clang** and **make** installed on your system.
+3. Use the following `make` command to compile the server:
 
+   ```bash
+   make
